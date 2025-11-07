@@ -1,30 +1,95 @@
-// ==================== SAFE JSON PARSE ====================
-function safeJSONParse(str, fallback) {
-  try { return str && str.trim() ? JSON.parse(str) : fallback; }
-  catch (error) { console.error('JSON parse error:', error); return fallback; }
-}
-
-// ==================== DATA MANAGEMENT ====================
-const data = {
-  workers:         safeJSONParse(localStorage.getItem('workers'), []),
-  places:          safeJSONParse(localStorage.getItem('places'), []),
-  overlockEntries: safeJSONParse(localStorage.getItem('overlockEntries'), []),
-  tasselEntries:   safeJSONParse(localStorage.getItem('tasselEntries'), []),
-  foldEntries:     safeJSONParse(localStorage.getItem('foldEntries'), []),
-  deliveryEntries: safeJSONParse(localStorage.getItem('deliveryEntries'), [])
+// ==================== FIREBASE CONFIGURATION ====================
+const firebaseConfig = {
+  apiKey: "AIzaSyD0lZv_e-pzwn5Yex0PKEsQmt3MJL1WmBI",
+  authDomain: "namma-veetu-company.firebaseapp.com",
+  projectId: "namma-veetu-company",
+  storageBucket: "namma-veetu-company.firebasestorage.app",
+  messagingSenderId: "501016676289",
+  appId: "1:501016676289:web:373797cb9ddcb3f7ac5140",
+  measurementId: "G-E9G7N9ZENT"
 };
 
-// ==================== INITIALIZATION ====================
-function initApp() {
-  try {
-    const dataVersion = localStorage.getItem('dataVersion');
-    if (dataVersion !== '5.0') {
-      console.log('Upgrading to delivery system...');
-      localStorage.clear();
-      localStorage.setItem('dataVersion', '5.0');
-      data.workers = []; data.places = []; data.overlockEntries = [];
-      data.tasselEntries = []; data.foldEntries = []; data.deliveryEntries = [];
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
+
+// ✅ Enable offline persistence
+db.enablePersistence()
+  .catch((err) => {
+    if (err.code === 'failed-precondition') {
+      console.warn('Multiple tabs open, persistence enabled in first tab only');
+    } else if (err.code === 'unimplemented') {
+      console.warn('Browser doesn\'t support persistence');
     }
+  });
+
+// Collection names
+const COLLECTIONS = {
+  workers: 'workers',
+  places: 'places',
+  overlockEntries: 'overlockEntries',
+  tasselEntries: 'tasselEntries',
+  foldEntries: 'foldEntries',
+  deliveryEntries: 'deliveryEntries'
+};
+
+// ==================== DATA MANAGEMENT (FIREBASE) ====================
+const data = {
+  workers: [],
+  places: [],
+  overlockEntries: [],
+  tasselEntries: [],
+  foldEntries: [],
+  deliveryEntries: []
+};
+
+// ==================== FIREBASE HELPER FUNCTIONS ====================
+async function loadFromFirebase(collectionName) {
+  try {
+    const snapshot = await db.collection(collectionName).get();
+    return snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
+  } catch (error) {
+    console.error(`Error loading ${collectionName}:`, error);
+    showToast(`Error loading ${collectionName}`, 'error');
+    return [];
+  }
+}
+
+async function saveToFirebase(collectionName, dataObj) {
+  try {
+    const docRef = await db.collection(collectionName).add(dataObj);
+    return docRef.id;
+  } catch (error) {
+    console.error(`Error saving to ${collectionName}:`, error);
+    showToast(`Error saving to ${collectionName}`, 'error');
+    return null;
+  }
+}
+
+async function deleteFromFirebase(collectionName, firebaseId) {
+  try {
+    await db.collection(collectionName).doc(firebaseId).delete();
+    return true;
+  } catch (error) {
+    console.error(`Error deleting from ${collectionName}:`, error);
+    showToast(`Error deleting from ${collectionName}`, 'error');
+    return false;
+  }
+}
+
+// ==================== INITIALIZATION ====================
+async function initApp() {
+  try {
+    showToast('Loading data from cloud...');
+    
+    // Load all data from Firebase
+    data.workers = await loadFromFirebase(COLLECTIONS.workers);
+    data.places = await loadFromFirebase(COLLECTIONS.places);
+    data.overlockEntries = await loadFromFirebase(COLLECTIONS.overlockEntries);
+    data.tasselEntries = await loadFromFirebase(COLLECTIONS.tasselEntries);
+    data.foldEntries = await loadFromFirebase(COLLECTIONS.foldEntries);
+    data.deliveryEntries = await loadFromFirebase(COLLECTIONS.deliveryEntries);
 
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('overlockDate').value  = today;
@@ -44,10 +109,13 @@ function initApp() {
       const ls = document.getElementById('loadingScreen');
       if (ls) ls.classList.add('hidden');
     }, 500);
+    
+    showToast('Data loaded successfully! ✅');
   } catch (error) {
     console.error('Initialization error:', error);
     const ls = document.getElementById('loadingScreen');
     if (ls) ls.innerHTML = '<p style="color: red;">Error loading app. Please refresh the page.</p>';
+    showToast('Error initializing app', 'error');
   }
 }
 
@@ -63,31 +131,44 @@ function switchTab(btn, tabName) {
 }
 
 // ==================== WORKER MANAGEMENT ====================
-function addWorker() {
+async function addWorker() {
   const id = document.getElementById('workerId').value.trim();
   const name = document.getElementById('workerName').value.trim();
   if (!id || !name) { showToast('Please fill all fields', 'error'); return; }
   if (data.workers.some(w => w.id === id)) { showToast('Worker ID already exists', 'error'); return; }
-  data.workers.push({ id, name, active: true });
-  saveData(); clearWorkerForm(); renderWorkers(); populateWorkerSelects(); updateDashboard();
-  showToast(`Worker ${name} added successfully!`);
-}
-function deleteWorker(id) {
-  if (confirm('Are you sure you want to delete this worker?')) {
-    data.workers = data.workers.filter(w => w.id !== id);
-    saveData(); renderWorkers(); populateWorkerSelects(); updateDashboard(); showToast('Worker deleted');
+  
+  const workerData = { id, name, active: true, createdAt: new Date().toISOString() };
+  const firebaseId = await saveToFirebase(COLLECTIONS.workers, workerData);
+  
+  if (firebaseId) {
+    data.workers.push({ firebaseId, ...workerData });
+    clearWorkerForm(); renderWorkers(); populateWorkerSelects(); updateDashboard();
+    showToast(`Worker ${name} added successfully!`);
   }
 }
+
+async function deleteWorker(firebaseId) {
+  if (confirm('Are you sure you want to delete this worker?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.workers, firebaseId);
+    if (success) {
+      data.workers = data.workers.filter(w => w.firebaseId !== firebaseId);
+      renderWorkers(); populateWorkerSelects(); updateDashboard(); showToast('Worker deleted');
+    }
+  }
+}
+
 function renderWorkers() {
   const tbody = document.getElementById('workersTableBody');
   tbody.innerHTML = data.workers.map(w => `
     <tr>
       <td>${w.id}</td><td>${w.name}</td>
       <td><span class="badge badge-success">Active</span></td>
-      <td><button class="btn btn-danger btn-small" onclick="deleteWorker('${w.id}')">Delete</button></td>
+      <td><button class="btn btn-danger btn-small" onclick="deleteWorker('${w.firebaseId}')">Delete</button></td>
     </tr>`).join('');
 }
+
 function clearWorkerForm(){ document.getElementById('workerId').value=''; document.getElementById('workerName').value=''; }
+
 function populateWorkerSelects() {
   const opts = '<option>Select Worker</option>' + data.workers.map(w => `<option value="${w.id}">${w.name} (${w.id})</option>`).join('');
   document.getElementById('overlockWorker').innerHTML = opts;
@@ -96,38 +177,51 @@ function populateWorkerSelects() {
 }
 
 // ==================== DELIVERY PLACES ====================
-function addPlace() {
+async function addPlace() {
   const id = document.getElementById('placeId').value.trim();
   const name = document.getElementById('placeName').value.trim();
   if (!id || !name) { showToast('Please fill all fields', 'error'); return; }
   if (data.places.some(p => p.id === id)) { showToast('Place ID already exists', 'error'); return; }
-  data.places.push({ id, name, active: true });
-  saveData(); clearPlaceForm(); renderPlaces(); populatePlaceSelects();
-  showToast(`Delivery place ${name} added successfully!`);
-}
-function deletePlace(id) {
-  if (confirm('Are you sure you want to delete this delivery place?')) {
-    data.places = data.places.filter(p => p.id !== id);
-    saveData(); renderPlaces(); populatePlaceSelects(); showToast('Delivery place deleted');
+  
+  const placeData = { id, name, active: true, createdAt: new Date().toISOString() };
+  const firebaseId = await saveToFirebase(COLLECTIONS.places, placeData);
+  
+  if (firebaseId) {
+    data.places.push({ firebaseId, ...placeData });
+    clearPlaceForm(); renderPlaces(); populatePlaceSelects();
+    showToast(`Delivery place ${name} added successfully!`);
   }
 }
+
+async function deletePlace(firebaseId) {
+  if (confirm('Are you sure you want to delete this delivery place?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.places, firebaseId);
+    if (success) {
+      data.places = data.places.filter(p => p.firebaseId !== firebaseId);
+      renderPlaces(); populatePlaceSelects(); showToast('Delivery place deleted');
+    }
+  }
+}
+
 function renderPlaces() {
   const tbody = document.getElementById('placesTableBody');
   tbody.innerHTML = data.places.map(p => `
     <tr>
       <td>${p.id}</td><td>${p.name}</td>
       <td><span class="badge badge-success">Active</span></td>
-      <td><button class="btn btn-danger btn-small" onclick="deletePlace('${p.id}')">Delete</button></td>
+      <td><button class="btn btn-danger btn-small" onclick="deletePlace('${p.firebaseId}')">Delete</button></td>
     </tr>`).join('');
 }
+
 function clearPlaceForm(){ document.getElementById('placeId').value=''; document.getElementById('placeName').value=''; }
+
 function populatePlaceSelects() {
   const opts = '<option>Select Location</option>' + data.places.map(p => `<option value="${p.id}">${p.name} (${p.id})</option>`).join('');
   document.getElementById('deliveryPlace').innerHTML = opts;
 }
 
 // ==================== OVERLOCK ====================
-function addOverlockEntry() {
+async function addOverlockEntry() {
   const date = document.getElementById('overlockDate').value;
   const workerId = document.getElementById('overlockWorker').value;
   const towelType = document.getElementById('overlockTowelType').value.trim();
@@ -138,18 +232,28 @@ function addOverlockEntry() {
   if (!date || workerId === 'Select Worker' || !towelType || price <= 0 || qty <= 0) {
     showToast('Please fill all fields correctly', 'error'); return;
   }
-  data.overlockEntries.push({ date, workerId, towelType, qty, rate: price, nextStep, id: Date.now() });
-  saveData();
-  document.getElementById('overlockTowelType').value=''; document.getElementById('overlockPrice').value='0'; document.getElementById('overlockQty').value='0';
-  renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard();
-  showToast('Overlock entry added successfully!');
-}
-function deleteOverlockEntry(id) {
-  if (confirm('Delete this entry?')) {
-    data.overlockEntries = data.overlockEntries.filter(e => e.id !== id);
-    saveData(); renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard(); showToast('Entry deleted');
+  
+  const entryData = { date, workerId, towelType, qty, rate: price, nextStep, createdAt: new Date().toISOString() };
+  const firebaseId = await saveToFirebase(COLLECTIONS.overlockEntries, entryData);
+  
+  if (firebaseId) {
+    data.overlockEntries.push({ firebaseId, ...entryData });
+    document.getElementById('overlockTowelType').value=''; document.getElementById('overlockPrice').value='0'; document.getElementById('overlockQty').value='0';
+    renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard();
+    showToast('Overlock entry added successfully!');
   }
 }
+
+async function deleteOverlockEntry(firebaseId) {
+  if (confirm('Delete this entry?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.overlockEntries, firebaseId);
+    if (success) {
+      data.overlockEntries = data.overlockEntries.filter(e => e.firebaseId !== firebaseId);
+      renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard(); showToast('Entry deleted');
+    }
+  }
+}
+
 function renderOverlockEntries() {
   const today = new Date().toISOString().split('T')[0];
   const tbody = document.getElementById('overlockTableBody');
@@ -159,10 +263,10 @@ function renderOverlockEntries() {
     const amount = e.qty * e.rate;
     let status = '';
     if (e.nextStep === 'Tassel') {
-      const tasselQty = data.tasselEntries.filter(t => t.overlockEntryId === e.id).reduce((s,t)=>s+t.qty,0);
+      const tasselQty = data.tasselEntries.filter(t => t.overlockEntryId === e.firebaseId).reduce((s,t)=>s+t.qty,0);
       status = tasselQty >= e.qty ? '<span class="badge badge-success">Completed</span>' : '<span class="badge badge-warning">Pending Tassel</span>';
     } else {
-      const foldQty = data.foldEntries.filter(f => f.overlockEntryId === e.id).reduce((s,f)=>s+f.qty,0);
+      const foldQty = data.foldEntries.filter(f => f.overlockEntryId === e.firebaseId).reduce((s,f)=>s+f.qty,0);
       status = foldQty >= e.qty ? '<span class="badge badge-success">Completed</span>' : '<span class="badge badge-warning">Pending Fold</span>';
     }
     return `
@@ -172,7 +276,7 @@ function renderOverlockEntries() {
         <td>₹${e.rate.toFixed(2)}</td><td>₹${amount.toFixed(2)}</td>
         <td><span class="badge badge-info">${e.nextStep}</span></td>
         <td>${status}</td>
-        <td><button class="btn btn-danger btn-small" onclick="deleteOverlockEntry(${e.id})">Delete</button></td>
+        <td><button class="btn btn-danger btn-small" onclick="deleteOverlockEntry('${e.firebaseId}')">Delete</button></td>
       </tr>`;
   }).join('');
 }
@@ -185,27 +289,28 @@ function populateAvailableTowelsForTassel() {
   const available = [];
   overlockForTassel.forEach(overlock => {
     const worker = data.workers.find(w => w.id === overlock.workerId);
-    const tasselQty = data.tasselEntries.filter(t => t.date === date && t.overlockEntryId === overlock.id).reduce((s,t)=>s+t.qty,0);
+    const tasselQty = data.tasselEntries.filter(t => t.date === date && t.overlockEntryId === overlock.firebaseId).reduce((s,t)=>s+t.qty,0);
     const remaining = overlock.qty - tasselQty;
-    if (remaining > 0) available.push({ id: overlock.id, towelType: overlock.towelType, remaining, workerName: worker ? worker.name : 'Unknown' });
+    if (remaining > 0) available.push({ id: overlock.firebaseId, towelType: overlock.towelType, remaining, workerName: worker ? worker.name : 'Unknown' });
   });
   sel.innerHTML = available.length === 0
     ? '<option value="">No overlock towels waiting for tassel</option>'
     : '<option value="">Select available towel</option>' +
       available.map(t => `<option value="${t.id}">${t.towelType} (${t.workerName} - ${t.remaining} pcs)</option>`).join('');
 }
+
 function updateTasselDetails() {
-  const selectedId = parseInt(document.getElementById('tasselTowelSelect').value);
+  const selectedId = document.getElementById('tasselTowelSelect').value;
   if (!selectedId) {
     document.getElementById('tasselTowelType').value=''; document.getElementById('tasselPreviousWorker').value='';
     document.getElementById('tasselAvailableQty').value=''; document.getElementById('tasselPrice').value='0'; document.getElementById('tasselQty').value='0';
     return;
   }
   const date = document.getElementById('tasselDate').value;
-  const entry = data.overlockEntries.find(e => e.id === selectedId);
+  const entry = data.overlockEntries.find(e => e.firebaseId === selectedId);
   if (entry) {
     const worker = data.workers.find(w => w.id === entry.workerId);
-    const tasselQty = data.tasselEntries.filter(t => t.date === date && t.overlockEntryId === entry.id).reduce((s,t)=>s+t.qty,0);
+    const tasselQty = data.tasselEntries.filter(t => t.date === date && t.overlockEntryId === entry.firebaseId).reduce((s,t)=>s+t.qty,0);
     const remaining = entry.qty - tasselQty;
     document.getElementById('tasselTowelType').value = entry.towelType;
     document.getElementById('tasselPreviousWorker').value = worker ? worker.name : 'Unknown';
@@ -213,34 +318,44 @@ function updateTasselDetails() {
     document.getElementById('tasselPrice').value = '0'; document.getElementById('tasselQty').value = '0';
   }
 }
-function addTasselEntry() {
+
+async function addTasselEntry() {
   const date = document.getElementById('tasselDate').value;
   const workerId = document.getElementById('tasselWorker').value;
-  const overlockEntryId = parseInt(document.getElementById('tasselTowelSelect').value);
+  const selectedId = document.getElementById('tasselTowelSelect').value;
   const towelType = document.getElementById('tasselTowelType').value.trim();
   const price = parseFloat(document.getElementById('tasselPrice').value);
   const qty = parseInt(document.getElementById('tasselQty').value);
   const availableQty = parseInt(document.getElementById('tasselAvailableQty').value) || 0;
 
-  if (!date || workerId === 'Select Worker' || !overlockEntryId || !towelType || !price || price <= 0 || !qty || qty <= 0) {
+  if (!date || workerId === 'Select Worker' || !selectedId || !towelType || !price || price <= 0 || !qty || qty <= 0) {
     showToast('Please select a towel and fill all fields correctly', 'error'); return;
   }
   if (qty > availableQty) { showToast(`Only ${availableQty} pcs available for tassel!`, 'error'); return; }
 
-  data.tasselEntries.push({ date, workerId, towelType, qty, rate: price, overlockEntryId, id: Date.now() });
-  saveData();
-  document.getElementById('tasselTowelSelect').value=''; document.getElementById('tasselTowelType').value='';
-  document.getElementById('tasselPrice').value='0'; document.getElementById('tasselPreviousWorker').value='';
-  document.getElementById('tasselAvailableQty').value=''; document.getElementById('tasselQty').value='0';
-  renderTasselEntries(); renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard();
-  showToast('Tassel entry added successfully!');
-}
-function deleteTasselEntry(id){
-  if (confirm('Delete this entry?')) {
-    data.tasselEntries = data.tasselEntries.filter(e => e.id !== id);
-    saveData(); renderTasselEntries(); renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard(); showToast('Entry deleted');
+  const entryData = { date, workerId, towelType, qty, rate: price, overlockEntryId: selectedId, createdAt: new Date().toISOString() };
+  const firebaseId = await saveToFirebase(COLLECTIONS.tasselEntries, entryData);
+  
+  if (firebaseId) {
+    data.tasselEntries.push({ firebaseId, ...entryData });
+    document.getElementById('tasselTowelSelect').value=''; document.getElementById('tasselTowelType').value='';
+    document.getElementById('tasselPrice').value='0'; document.getElementById('tasselPreviousWorker').value='';
+    document.getElementById('tasselAvailableQty').value=''; document.getElementById('tasselQty').value='0';
+    renderTasselEntries(); renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard();
+    showToast('Tassel entry added successfully!');
   }
 }
+
+async function deleteTasselEntry(firebaseId){
+  if (confirm('Delete this entry?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.tasselEntries, firebaseId);
+    if (success) {
+      data.tasselEntries = data.tasselEntries.filter(e => e.firebaseId !== firebaseId);
+      renderTasselEntries(); renderOverlockEntries(); populateAvailableTowelsForTassel(); populateAvailableTowels(); updateDashboard(); showToast('Entry deleted');
+    }
+  }
+}
+
 function renderTasselEntries() {
   const today = new Date().toISOString().split('T')[0];
   const tbody = document.getElementById('tasselTableBody');
@@ -248,7 +363,7 @@ function renderTasselEntries() {
   tbody.innerHTML = entries.map(e => {
     const worker = data.workers.find(w => w.id === e.workerId);
     const amount = e.qty * e.rate;
-    const foldQty = data.foldEntries.filter(f => f.tasselEntryId === e.id).reduce((s,f)=>s+f.qty,0);
+    const foldQty = data.foldEntries.filter(f => f.tasselEntryId === e.firebaseId).reduce((s,f)=>s+f.qty,0);
     const status = foldQty >= e.qty ? '<span class="badge badge-success">Completed</span>' : '<span class="badge badge-warning">Pending Fold</span>';
     return `
       <tr>
@@ -256,7 +371,7 @@ function renderTasselEntries() {
         <td>${e.towelType}</td><td>${e.qty}</td>
         <td>₹${e.rate.toFixed(2)}</td><td>₹${amount.toFixed(2)}</td>
         <td>${status}</td>
-        <td><button class="btn btn-danger btn-small" onclick="deleteTasselEntry(${e.id})">Delete</button></td>
+        <td><button class="btn btn-danger btn-small" onclick="deleteTasselEntry('${e.firebaseId}')">Delete</button></td>
       </tr>`;
   }).join('');
 }
@@ -270,17 +385,17 @@ function populateAvailableTowels() {
   const tasselEntries = data.tasselEntries.filter(e => e.date === date);
   tasselEntries.forEach(t => {
     const worker = data.workers.find(w => w.id === t.workerId);
-    const foldedQty = data.foldEntries.filter(f => f.date === date && f.tasselEntryId === t.id).reduce((s,f)=>s+f.qty,0);
+    const foldedQty = data.foldEntries.filter(f => f.date === date && f.tasselEntryId === t.firebaseId).reduce((s,f)=>s+f.qty,0);
     const remaining = t.qty - foldedQty;
-    if (remaining > 0) available.push({ type:'tassel', id:t.id, towelType:t.towelType, remaining, workerName: worker ? worker.name : 'Unknown', source:'Tassel' });
+    if (remaining > 0) available.push({ type:'tassel', id:t.firebaseId, towelType:t.towelType, remaining, workerName: worker ? worker.name : 'Unknown', source:'Tassel' });
   });
 
   const overlockForFold = data.overlockEntries.filter(e => e.date === date && e.nextStep === 'Fold');
   overlockForFold.forEach(o => {
     const worker = data.workers.find(w => w.id === o.workerId);
-    const foldedQty = data.foldEntries.filter(f => f.date === date && f.overlockEntryId === o.id).reduce((s,f)=>s+f.qty,0);
+    const foldedQty = data.foldEntries.filter(f => f.date === date && f.overlockEntryId === o.firebaseId).reduce((s,f)=>s+f.qty,0);
     const remaining = o.qty - foldedQty;
-    if (remaining > 0) available.push({ type:'overlock', id:o.id, towelType:o.towelType, remaining, workerName: worker ? worker.name : 'Unknown', source:'Overlock' });
+    if (remaining > 0) available.push({ type:'overlock', id:o.firebaseId, towelType:o.towelType, remaining, workerName: worker ? worker.name : 'Unknown', source:'Overlock' });
   });
 
   sel.innerHTML = available.length === 0
@@ -288,6 +403,7 @@ function populateAvailableTowels() {
     : '<option value="">Select available towel</option>' +
       available.map(t => `<option value="${t.type}-${t.id}">${t.towelType} (${t.workerName} - ${t.remaining} pcs) [${t.source}]</option>`).join('');
 }
+
 function updateFoldDetails() {
   const selected = document.getElementById('foldTowelSelect').value;
   if (!selected) {
@@ -295,23 +411,22 @@ function updateFoldDetails() {
     document.getElementById('foldAvailableQty').value=''; document.getElementById('foldPrice').value='0'; document.getElementById('foldQty').value='0';
     return;
   }
-  const [type, idStr] = selected.split('-');
-  const entryId = parseInt(idStr);
+  const [type, fid] = selected.split('-');
   const date = document.getElementById('foldDate').value;
 
   let entry, worker, foldedQty = 0, remaining = 0;
   if (type === 'tassel') {
-    entry = data.tasselEntries.find(e => e.id === entryId);
+    entry = data.tasselEntries.find(e => e.firebaseId === fid);
     if (entry) {
       worker = data.workers.find(w => w.id === entry.workerId);
-      foldedQty = data.foldEntries.filter(f => f.date === date && f.tasselEntryId === entry.id).reduce((s,f)=>s+f.qty,0);
+      foldedQty = data.foldEntries.filter(f => f.date === date && f.tasselEntryId === entry.firebaseId).reduce((s,f)=>s+f.qty,0);
       remaining = entry.qty - foldedQty;
     }
   } else {
-    entry = data.overlockEntries.find(e => e.id === entryId);
+    entry = data.overlockEntries.find(e => e.firebaseId === fid);
     if (entry) {
       worker = data.workers.find(w => w.id === entry.workerId);
-      foldedQty = data.foldEntries.filter(f => f.date === date && f.overlockEntryId === entry.id).reduce((s,f)=>s+f.qty,0);
+      foldedQty = data.foldEntries.filter(f => f.date === date && f.overlockEntryId === entry.firebaseId).reduce((s,f)=>s+f.qty,0);
       remaining = entry.qty - foldedQty;
     }
   }
@@ -322,7 +437,8 @@ function updateFoldDetails() {
     document.getElementById('foldPrice').value = '0'; document.getElementById('foldQty').value = '0';
   }
 }
-function addFoldEntry() {
+
+async function addFoldEntry() {
   const date = document.getElementById('foldDate').value;
   const workerId = document.getElementById('foldWorker').value;
   const selectedValue = document.getElementById('foldTowelSelect').value;
@@ -336,25 +452,32 @@ function addFoldEntry() {
   }
   if (qty > availableQty) { showToast(`Only ${availableQty} pcs available to fold!`, 'error'); return; }
 
-  const [type, id] = selectedValue.split('-');
-  const entryId = parseInt(id);
-  const foldEntry = { date, workerId, towelType, qty, rate: price, id: Date.now() };
-  if (type === 'tassel') foldEntry.tasselEntryId = entryId; else foldEntry.overlockEntryId = entryId;
+  const [type, fid] = selectedValue.split('-');
+  const foldData = { date, workerId, towelType, qty, rate: price, createdAt: new Date().toISOString() };
+  if (type === 'tassel') foldData.tasselEntryId = fid; else foldData.overlockEntryId = fid;
 
-  data.foldEntries.push(foldEntry);
-  saveData();
-  document.getElementById('foldTowelSelect').value=''; document.getElementById('foldTowelType').value='';
-  document.getElementById('foldPrice').value='0'; document.getElementById('foldPreviousWorker').value='';
-  document.getElementById('foldAvailableQty').value=''; document.getElementById('foldQty').value='0';
-  renderFoldEntries(); renderTasselEntries(); renderOverlockEntries(); populateAvailableTowels(); populateFoldedTowels(); updateDashboard();
-  showToast('Fold entry added successfully!');
-}
-function deleteFoldEntry(id){
-  if (confirm('Delete this entry?')) {
-    data.foldEntries = data.foldEntries.filter(e => e.id !== id);
-    saveData(); renderFoldEntries(); renderTasselEntries(); renderOverlockEntries(); populateAvailableTowels(); populateFoldedTowels(); updateDashboard(); showToast('Entry deleted');
+  const firebaseId = await saveToFirebase(COLLECTIONS.foldEntries, foldData);
+  
+  if (firebaseId) {
+    data.foldEntries.push({ firebaseId, ...foldData });
+    document.getElementById('foldTowelSelect').value=''; document.getElementById('foldTowelType').value='';
+    document.getElementById('foldPrice').value='0'; document.getElementById('foldPreviousWorker').value='';
+    document.getElementById('foldAvailableQty').value=''; document.getElementById('foldQty').value='0';
+    renderFoldEntries(); renderTasselEntries(); renderOverlockEntries(); populateAvailableTowels(); populateFoldedTowels(); updateDashboard();
+    showToast('Fold entry added successfully!');
   }
 }
+
+async function deleteFoldEntry(firebaseId){
+  if (confirm('Delete this entry?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.foldEntries, firebaseId);
+    if (success) {
+      data.foldEntries = data.foldEntries.filter(e => e.firebaseId !== firebaseId);
+      renderFoldEntries(); renderTasselEntries(); renderOverlockEntries(); populateAvailableTowels(); populateFoldedTowels(); updateDashboard(); showToast('Entry deleted');
+    }
+  }
+}
+
 function renderFoldEntries(){
   const today = new Date().toISOString().split('T')[0];
   const tbody = document.getElementById('foldTableBody');
@@ -367,7 +490,7 @@ function renderFoldEntries(){
         <td>${worker ? worker.name : 'Unknown'}</td>
         <td>${e.towelType}</td><td>${e.qty}</td>
         <td>₹${e.rate.toFixed(2)}</td><td>₹${amount.toFixed(2)}</td>
-        <td><button class="btn btn-danger btn-small" onclick="deleteFoldEntry(${e.id})">Delete</button></td>
+        <td><button class="btn btn-danger btn-small" onclick="deleteFoldEntry('${e.firebaseId}')">Delete</button></td>
       </tr>`;
   }).join('');
 }
@@ -388,6 +511,7 @@ function populateFoldedTowels(){
     : '<option value="">Select towel type</option>' +
       available.map(t => `<option value="${t.towelType}">${t.towelType} (${t.remaining} pcs available)</option>`).join('');
 }
+
 function updateDeliveryDetails(){
   const type = document.getElementById('deliveryTowelSelect').value;
   if (!type){ document.getElementById('deliveryAvailableQty').value=''; document.getElementById('deliveryQty').value='0'; return; }
@@ -397,7 +521,8 @@ function updateDeliveryDetails(){
   document.getElementById('deliveryAvailableQty').value = foldedQty - deliveredQty;
   document.getElementById('deliveryQty').value = '0';
 }
-function addDeliveryEntry(){
+
+async function addDeliveryEntry(){
   const date = document.getElementById('deliveryDate').value;
   const towelType = document.getElementById('deliveryTowelSelect').value;
   const qty = parseInt(document.getElementById('deliveryQty').value);
@@ -410,18 +535,27 @@ function addDeliveryEntry(){
   if (qty > availableQty) { showToast(`Only ${availableQty} pcs available for delivery!`, 'error'); return; }
 
   const place = data.places.find(p => p.id === placeId);
-  data.deliveryEntries.push({ date, towelType, qty, placeId, placeName: place ? place.name : 'Unknown', id: Date.now() });
-  saveData();
-  document.getElementById('deliveryTowelSelect').value=''; document.getElementById('deliveryAvailableQty').value='';
-  document.getElementById('deliveryQty').value='0'; document.getElementById('deliveryPlace').value='Select Location';
-  renderDeliveryEntries(); populateFoldedTowels(); updateDashboard(); showToast('Delivery entry added successfully!');
-}
-function deleteDeliveryEntry(id){
-  if (confirm('Delete this delivery entry?')) {
-    data.deliveryEntries = data.deliveryEntries.filter(e => e.id !== id);
-    saveData(); renderDeliveryEntries(); populateFoldedTowels(); updateDashboard(); showToast('Delivery entry deleted');
+  const deliveryData = { date, towelType, qty, placeId, placeName: place ? place.name : 'Unknown', createdAt: new Date().toISOString() };
+  const firebaseId = await saveToFirebase(COLLECTIONS.deliveryEntries, deliveryData);
+  
+  if (firebaseId) {
+    data.deliveryEntries.push({ firebaseId, ...deliveryData });
+    document.getElementById('deliveryTowelSelect').value=''; document.getElementById('deliveryAvailableQty').value='';
+    document.getElementById('deliveryQty').value='0'; document.getElementById('deliveryPlace').value='Select Location';
+    renderDeliveryEntries(); populateFoldedTowels(); updateDashboard(); showToast('Delivery entry added successfully!');
   }
 }
+
+async function deleteDeliveryEntry(firebaseId){
+  if (confirm('Delete this delivery entry?')) {
+    const success = await deleteFromFirebase(COLLECTIONS.deliveryEntries, firebaseId);
+    if (success) {
+      data.deliveryEntries = data.deliveryEntries.filter(e => e.firebaseId !== firebaseId);
+      renderDeliveryEntries(); populateFoldedTowels(); updateDashboard(); showToast('Delivery entry deleted');
+    }
+  }
+}
+
 function renderDeliveryEntries(){
   const today = new Date().toISOString().split('T')[0];
   const tbody = document.getElementById('deliveryTableBody');
@@ -429,7 +563,7 @@ function renderDeliveryEntries(){
   tbody.innerHTML = entries.map(e => `
     <tr>
       <td>${e.towelType}</td><td>${e.qty}</td><td>${e.placeName}</td><td>${e.date}</td>
-      <td><button class="btn btn-danger btn-small" onclick="deleteDeliveryEntry(${e.id})">Delete</button></td>
+      <td><button class="btn btn-danger btn-small" onclick="deleteDeliveryEntry('${e.firebaseId}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -447,9 +581,9 @@ function updateDashboard(){
   const todayFold     = data.foldEntries.filter(e => e.date === today);
 
   let totalCompleted = 0;
-  todayTassel.forEach(t => totalCompleted += data.foldEntries.filter(f => f.tasselEntryId === t.id).reduce((s,f)=>s+f.qty,0));
+  todayTassel.forEach(t => totalCompleted += data.foldEntries.filter(f => f.tasselEntryId === t.firebaseId).reduce((s,f)=>s+f.qty,0));
   todayOverlock.forEach(o => {
-    if (o.nextStep === 'Fold') totalCompleted += data.foldEntries.filter(f => f.overlockEntryId === o.id).reduce((s,f)=>s+f.qty,0);
+    if (o.nextStep === 'Fold') totalCompleted += data.foldEntries.filter(f => f.overlockEntryId === o.firebaseId).reduce((s,f)=>s+f.qty,0);
   });
   
   document.getElementById('todayProduction').textContent = totalCompleted;
@@ -473,7 +607,6 @@ function updateDashboard(){
   const mobileTotalEarnings = document.getElementById('mobileTotalEarnings');
   if (mobileTotalEarnings) mobileTotalEarnings.textContent = earnings;
 }
-
 // ==================== REPORT TYPE UI - MONTH-BASED WEEK SELECTOR ====================
 function updateReportTypeUI(){
   const reportType = document.getElementById('reportType').value;
@@ -605,7 +738,6 @@ function generateWeeklyDayWiseReport(startDate, endDate, overlockData, tasselDat
   const dateRange = `${startDate} to ${endDate}`;
   const reportTitle = 'Weekly Report (Day-wise)';
   
-  // Get all days in the week (Monday to Sunday)
   const start = new Date(startDate);
   const end = new Date(endDate);
   const days = [];
@@ -622,13 +754,11 @@ function generateWeeklyDayWiseReport(startDate, endDate, overlockData, tasselDat
     const dayName = day.toLocaleDateString('en-IN', { weekday: 'long' });
     const dayLabel = day.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
     
-    // Get entries for this specific day
     const dayOverlock = overlockData.filter(e => e.date === dayStr);
     const dayTassel = tasselData.filter(e => e.date === dayStr);
     const dayFold = foldData.filter(e => e.date === dayStr);
     const dayDelivery = deliveryData.filter(e => e.date === dayStr);
     
-    // Group by worker
     const workerGroups = {};
     
     [...dayOverlock, ...dayTassel].forEach(entry => {
@@ -655,13 +785,13 @@ function generateWeeklyDayWiseReport(startDate, endDate, overlockData, tasselDat
       
       let stitcherName = 'Unknown';
       if (foldEntry.tasselEntryId) {
-        const tasselEntry = data.tasselEntries.find(t => t.id === foldEntry.tasselEntryId);
+        const tasselEntry = data.tasselEntries.find(t => t.firebaseId === foldEntry.tasselEntryId);
         if (tasselEntry) {
           const stitcher = data.workers.find(w => w.id === tasselEntry.workerId);
           stitcherName = stitcher ? stitcher.name : 'Unknown';
         }
       } else if (foldEntry.overlockEntryId) {
-        const overlockEntry = data.overlockEntries.find(o => o.id === foldEntry.overlockEntryId);
+        const overlockEntry = data.overlockEntries.find(o => o.firebaseId === foldEntry.overlockEntryId);
         if (overlockEntry) {
           const stitcher = data.workers.find(w => w.id === overlockEntry.workerId);
           stitcherName = stitcher ? stitcher.name : 'Unknown';
@@ -713,7 +843,6 @@ function generateWeeklyDayWiseReport(startDate, endDate, overlockData, tasselDat
         </div>`;
     });
     
-    // Deliveries for this day
     let deliveriesHTML = '';
     if (dayDelivery.length > 0) {
       deliveriesHTML = `
@@ -728,7 +857,6 @@ function generateWeeklyDayWiseReport(startDate, endDate, overlockData, tasselDat
     
     grandTotal += dayTotal;
     
-    // Only show day if there's activity
     if (Object.keys(workerGroups).length > 0 || dayDelivery.length > 0) {
       daysHTML += `
         <div class="day-section" style="background:white;padding:20px;border-radius:12px;margin-bottom:20px;border:2px solid #2563eb;">
@@ -802,13 +930,13 @@ function generateStandardReport(reportType, startDate, endDate, overlockData, ta
     
     let stitcherName = 'Unknown';
     if (foldEntry.tasselEntryId) {
-      const tasselEntry = data.tasselEntries.find(t => t.id === foldEntry.tasselEntryId);
+      const tasselEntry = data.tasselEntries.find(t => t.firebaseId === foldEntry.tasselEntryId);
       if (tasselEntry) {
         const stitcher = data.workers.find(w => w.id === tasselEntry.workerId);
         stitcherName = stitcher ? stitcher.name : 'Unknown';
       }
     } else if (foldEntry.overlockEntryId) {
-      const overlockEntry = data.overlockEntries.find(o => o.id === foldEntry.overlockEntryId);
+      const overlockEntry = data.overlockEntries.find(o => o.firebaseId === foldEntry.overlockEntryId);
       if (overlockEntry) {
         const stitcher = data.workers.find(w => w.id === overlockEntry.workerId);
         stitcherName = stitcher ? stitcher.name : 'Unknown';
@@ -921,19 +1049,37 @@ function showToast(msg){ try{
   t.textContent = msg; t.className = 'toast show'; setTimeout(()=>t.classList.remove('show'),3000);
 } catch(e){ console.error('Toast error:', e); } }
 
-function saveData(){
-  localStorage.setItem('workers', JSON.stringify(data.workers));
-  localStorage.setItem('places', JSON.stringify(data.places));
-  localStorage.setItem('overlockEntries', JSON.stringify(data.overlockEntries));
-  localStorage.setItem('tasselEntries', JSON.stringify(data.tasselEntries));
-  localStorage.setItem('foldEntries', JSON.stringify(data.foldEntries));
-  localStorage.setItem('deliveryEntries', JSON.stringify(data.deliveryEntries));
-}
-
-function clearAllData(){
-  if (confirm('⚠️ WARNING: This will delete ALL data (workers, places, entries, everything)!\n\nAre you absolutely sure?')) {
+async function clearAllData(){
+  if (confirm('⚠️ WARNING: This will delete ALL data from Firebase!\n\nAre you absolutely sure?')) {
     if (confirm('Last chance! This cannot be undone. Delete everything?')) {
-      localStorage.clear(); location.reload(); showToast('All data cleared! Starting fresh...');
+      try {
+        showToast('Deleting all data...');
+        
+        const collections = Object.values(COLLECTIONS);
+        for (const collectionName of collections) {
+          const snapshot = await db.collection(collectionName).get();
+          const batch = db.batch();
+          snapshot.docs.forEach(doc => batch.delete(doc.ref));
+          await batch.commit();
+        }
+        
+        data.workers = [];
+        data.places = [];
+        data.overlockEntries = [];
+        data.tasselEntries = [];
+        data.foldEntries = [];
+        data.deliveryEntries = [];
+        
+        renderWorkers(); renderPlaces();
+        renderOverlockEntries(); renderTasselEntries(); renderFoldEntries(); renderDeliveryEntries();
+        populateWorkerSelects(); populatePlaceSelects();
+        updateDashboard();
+        
+        showToast('All data cleared from cloud! ✅');
+      } catch (error) {
+        console.error('Error clearing data:', error);
+        showToast('Error clearing data!', 'error');
+      }
     }
   }
 }
@@ -1006,4 +1152,15 @@ function switchTabMobile(event, link, tabName) {
     showToast(`Switched to ${link.querySelector('.menu-label').textContent}`);
 }
 
-window.addEventListener('load', initApp);
+// ==================== FIREBASE AUTH INITIALIZATION ====================
+// ✅ Sign in anonymously before loading app
+auth.signInAnonymously()
+  .then(() => {
+    console.log('✅ Signed in anonymously');
+    initApp();
+  })
+  .catch((error) => {
+    console.error('❌ Auth error:', error);
+    const ls = document.getElementById('loadingScreen');
+    if (ls) ls.innerHTML = '<p style="color: red;">Authentication failed. Please refresh the page.</p>';
+  });
